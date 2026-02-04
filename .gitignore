@@ -1,0 +1,45 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment variables (sensitive)
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+import_log.txt
+
+# Configuration files with secrets
+*.json
+!package.json
+!package-lock.json
+!tailwind.config.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.backup

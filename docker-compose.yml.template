@@ -1,0 +1,92 @@
+version: "3.8"
+
+# RAG Infrastructure Services
+# Creates shared-infra-network for other projects to connect
+# Services: RAG, ChromaDB, Redis, Celery
+
+services:
+  # RAG Service
+  rag-service:
+    # TODO: Add your RAG service configuration here
+    # This is a template - merge with your actual rag-service config
+    networks:
+      - shared-infra-network
+    # ... your existing rag-service config ...
+
+  # ChromaDB
+  chroma:
+    # TODO: Add your ChromaDB configuration here
+    # This is a template - merge with your actual chroma config
+    networks:
+      - shared-infra-network
+    # ... your existing chroma config ...
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - shared-infra-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Celery Worker (NEW)
+  celery-worker:
+    build:
+      context: ../vani  # Build from VANI project directory
+      dockerfile: Dockerfile
+    container_name: celery-worker
+    env_file:
+      - ../vani/.env.local  # Use VANI's environment variables
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_ENABLED=${CELERY_ENABLED:-true}
+      - DOCKER_CONTAINER=true
+    networks:
+      - shared-infra-network
+    volumes:
+      # Mount VANI code so Celery can import task modules
+      - ../vani:/app/vani:ro
+    working_dir: /app/vani
+    command: >
+      sh -c "
+        if [ \"$$CELERY_ENABLED\" = \"true\" ]; then
+          celery -A app.config.celery_config.celery_app worker 
+            --loglevel=info 
+            --queues=campaigns,crm_sync,workflows
+            --hostname=celery-worker@%h
+        else
+          echo 'Celery worker disabled (CELERY_ENABLED=false)'
+          sleep infinity
+        fi
+      "
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.config.celery_config.celery_app inspect ping -d celery-worker@$$(hostname) || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  shared-infra-network:
+    name: shared-infra-network
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local

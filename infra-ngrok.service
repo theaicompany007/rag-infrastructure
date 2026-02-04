@@ -1,0 +1,38 @@
+[Unit]
+Description=Ngrok Tunnel for Infrastructure Services (RAG/ChromaDB/VANI)
+Documentation=https://ngrok.com/docs
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+WorkingDirectory=/home/postgres/rag-infrastructure
+
+# Wait for Docker services to be ready
+ExecStartPre=/bin/sleep 10
+ExecStartPre=/bin/sh -c 'until docker ps --format "{{.Names}}" | grep -q "^rag-service$\|^chroma$\|^redis$"; do sleep 2; done'
+
+# Start ngrok tunnel with config
+# Uses tunnel configuration from ~/.config/ngrok/ngrok.yml
+# Example: ngrok start vani rag --config ~/.config/ngrok/ngrok.yml
+ExecStart=/usr/local/bin/ngrok start --all --config=/home/postgres/.config/ngrok/ngrok.yml
+
+# Alternative: Start specific tunnels
+# ExecStart=/usr/local/bin/ngrok start vani rag --config=/home/postgres/.config/ngrok/ngrok.yml
+
+Restart=always
+RestartSec=10
+StartLimitInterval=5min
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=infra-ngrok
+
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
