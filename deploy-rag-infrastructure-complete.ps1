@@ -727,10 +727,14 @@ try {
         Write-Info "Config cleanup had issues, but continuing: $_"
     }
     
-    # Check if project exists
+    # Check if project exists (use NoThrow to avoid exceptions on check)
     $checkCmd = '/usr/bin/stat /home/postgres/rag-infrastructure >/dev/null 2>&1 && echo exists || echo missing'
     try {
-        $projectExists = Invoke-SshCommand $checkCmd
+        $checkResult = Invoke-SshCommand $checkCmd -NoThrow
+        $projectExists = if ($checkResult.Output) { $checkResult.Output } else { "missing" }
+        # Clean up any whitespace/newlines
+        $projectExists = $projectExists.Trim()
+        Write-Verbose "Project existence check result: '$projectExists'"
     } catch {
         Write-Warning "Could not check if project exists, assuming missing: $_"
         $projectExists = "missing"
@@ -776,26 +780,42 @@ cd /home/postgres
         
         $remoteWrapper = "/tmp/clone-rag-infra.sh"
         Invoke-ScpCommand $tempWrapper $remoteWrapper
-        $execWrapperCmd = "chmod +x $remoteWrapper && /bin/sh $remoteWrapper 2>&1; exit_code=`$?; rm -f $remoteWrapper; if [ `$exit_code -ne 0 ]; then echo 'GIT_CLONE_FAILED'; fi; exit `$exit_code"
-        try {
-            $cloneOutput = Invoke-SshCommand $execWrapperCmd
-            if ($cloneOutput -match "GIT_CLONE_FAILED" -or $cloneOutput -match "Permission denied" -or $cloneOutput -match "ERROR: Repository not found") {
-                Write-Error "Git clone failed. Error output: $cloneOutput"
-                Write-Info "This usually means the VM's SSH key is not added to GitHub."
-                Write-Info "To fix this:"
-                Write-Info "1. Get the VM's public key by running on VM: cat ~/.ssh/$VmGitKeyName.pub"
-                Write-Info "2. Add it to GitHub as a Deploy Key: https://github.com/theaicompany007/rag-infrastructure/settings/keys"
-                Write-Info "3. Make sure to check 'Allow write access' if you want the VM to push"
-                throw "Git clone failed - SSH key not configured"
+            $execWrapperCmd = "chmod +x $remoteWrapper && /bin/sh $remoteWrapper 2>&1; exit_code=`$?; rm -f $remoteWrapper; if [ `$exit_code -ne 0 ]; then echo 'GIT_CLONE_FAILED'; fi; exit `$exit_code"
+            try {
+                $cloneResult = Invoke-SshCommand $execWrapperCmd -NoThrow
+                $cloneOutput = if ($cloneResult.Output) { $cloneResult.Output } else { "" }
+                $exitCode = if ($cloneResult.ExitCode) { $cloneResult.ExitCode } else { 0 }
+                
+                if ($exitCode -ne 0 -or $cloneOutput -match "GIT_CLONE_FAILED" -or $cloneOutput -match "Permission denied" -or $cloneOutput -match "ERROR: Repository not found" -or $cloneOutput -match "already exists and is not an empty directory") {
+                    if ($cloneOutput -match "already exists and is not an empty directory") {
+                        Write-Warning "Directory already exists. Removing and retrying clone..."
+                        Invoke-SshCommand "sudo rm -rf $RemoteProjectPath" -NoOutput
+                        # Retry clone
+                        $cloneResult = Invoke-SshCommand $execWrapperCmd -NoThrow
+                        $cloneOutput = if ($cloneResult.Output) { $cloneResult.Output } else { "" }
+                        $exitCode = if ($cloneResult.ExitCode) { $cloneResult.ExitCode } else { 0 }
+                        if ($exitCode -ne 0) {
+                            Write-Error "Git clone failed after retry. Error output: $cloneOutput"
+                            throw "Git clone failed - directory cleanup and retry failed"
+                        }
+                    } else {
+                        Write-Error "Git clone failed. Error output: $cloneOutput"
+                        Write-Info "This usually means the VM's SSH key is not added to GitHub."
+                        Write-Info "To fix this:"
+                        Write-Info "1. Get the VM's public key by running on VM: cat ~/.ssh/$VmGitKeyName.pub"
+                        Write-Info "2. Add it to GitHub account SSH keys: https://github.com/settings/keys"
+                        Write-Info "3. Or add it as a Deploy Key: https://github.com/theaicompany007/rag-infrastructure/settings/keys"
+                        throw "Git clone failed - SSH key not configured"
+                    }
+                }
+            } catch {
+                if ($_.Exception.Message -notmatch "Git clone failed") {
+                    Write-Error "Git clone failed: $_"
+                    Write-Info "This usually means the VM's SSH key is not added to GitHub."
+                    Write-Info "Add the VM's SSH key to GitHub account SSH keys: https://github.com/settings/keys"
+                }
+                throw
             }
-        } catch {
-            if ($_.Exception.Message -notmatch "Git clone failed") {
-                Write-Error "Git clone failed: $_"
-                Write-Info "This usually means the VM's SSH key is not added to GitHub."
-                Write-Info "Add the VM's SSH key to GitHub: https://github.com/theaicompany007/rag-infrastructure/settings/keys"
-            }
-            throw
-        }
         
         Remove-Item $tempWrapper -ErrorAction SilentlyContinue
         Write-Success "Cloned fresh from GitHub"
@@ -818,8 +838,32 @@ cd /home/postgres
             
             $remoteWrapper = "/tmp/clone-rag-infra.sh"
             Invoke-ScpCommand $tempWrapper $remoteWrapper
-            $execWrapperCmd = "chmod +x $remoteWrapper && env -i HOME=/home/postgres USER=postgres PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/sh $remoteWrapper && rm -f $remoteWrapper"
-            Invoke-SshCommand $execWrapperCmd
+            $execWrapperCmd = "chmod +x $remoteWrapper && env -i HOME=/home/postgres USER=postgres PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/sh $remoteWrapper 2>&1; exit_code=`$?; rm -f $remoteWrapper; if [ `$exit_code -ne 0 ]; then echo 'GIT_CLONE_FAILED'; fi; exit `$exit_code"
+            try {
+                $cloneResult = Invoke-SshCommand $execWrapperCmd -NoThrow
+                $cloneOutput = if ($cloneResult.Output) { $cloneResult.Output } else { "" }
+                $exitCode = if ($cloneResult.ExitCode) { $cloneResult.ExitCode } else { 0 }
+                
+                if ($exitCode -ne 0 -or $cloneOutput -match "GIT_CLONE_FAILED" -or $cloneOutput -match "already exists and is not an empty directory") {
+                    if ($cloneOutput -match "already exists and is not an empty directory") {
+                        Write-Warning "Directory already exists. Removing and retrying clone..."
+                        Invoke-SshCommand "sudo rm -rf $RemoteProjectPath" -NoOutput
+                        # Retry clone
+                        $cloneResult = Invoke-SshCommand $execWrapperCmd -NoThrow
+                        $exitCode = if ($cloneResult.ExitCode) { $cloneResult.ExitCode } else { 0 }
+                        if ($exitCode -ne 0) {
+                            Write-Error "Git clone failed after retry"
+                            throw "Git clone failed - directory cleanup and retry failed"
+                        }
+                    } else {
+                        Write-Error "Git clone failed. Error output: $cloneOutput"
+                        throw "Git clone failed"
+                    }
+                }
+            } catch {
+                Write-Error "Git clone failed: $_"
+                throw
+            }
             
             Remove-Item $tempWrapper -ErrorAction SilentlyContinue
             Write-Success "Cloned from GitHub"
