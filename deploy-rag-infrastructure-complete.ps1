@@ -205,8 +205,9 @@ $DeployMethod = "gcloud"  # "ssh" or "gcloud"
 $GcpZone = "asia-south1-a"
 $GcpProject = "onlynereputation-agentic"
 
-# VM key for GitHub (chroma-vm key added to theaicompany007 account)
-$VmGitKeyName = "id_ed25519_chroma_vm"
+# VM key for GitHub (vani-vm key added to theaicompany007 account SSH keys)
+# Note: Using id_ed25519 which is added to account SSH keys (works for all repos)
+$VmGitKeyName = "id_ed25519"
 
 # Project Paths
 $LocalProjectPath = $PSScriptRoot
