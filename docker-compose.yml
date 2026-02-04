@@ -109,7 +109,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.config.celery_config.celery_app inspect ping -d celery-worker@$$(hostname) || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.config.celery_config.celery_app inspect active || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -131,7 +131,10 @@ services:
     networks:
       - shared-infra-network
     volumes:
+      # Mount VANI code as read-only for imports
       - ../vani:/app/vani:ro
+      # Mount writable volume for celerybeat-schedule file
+      - celerybeat-data:/app/vani/celerybeat-schedule
     working_dir: /app/vani
     command: celery -A app.config.celery_config.celery_app beat --loglevel=info
     depends_on:
@@ -147,4 +150,6 @@ networks:
 
 volumes:
   redis-data:
+    driver: local
+  celerybeat-data:
     driver: local

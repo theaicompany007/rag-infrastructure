@@ -1,190 +1,157 @@
 <#
 .SYNOPSIS
-  Push RAG Infrastructure to GitHub
+  Push current project to GitHub
 
 .DESCRIPTION
-  This script pushes the rag-infrastructure project to GitHub.
-  Supports both SSH and HTTPS authentication with automatic fallback.
+  This script checks git status, optionally commits changes, and pushes to GitHub.
+  Supports both SSH and HTTPS authentication methods with automatic fallback.
+  Run this from the project root directory.
 
-.PARAMETER CommitMessage
-  Custom commit message for git push
+  AUTHENTICATION:
+  - By default, the script auto-detects the authentication method based on your
+    current git remote URL (preserves existing configuration)
+  - If SSH push fails, automatically falls back to HTTPS
+  - Use -UseHttps or -UseSsh to explicitly force a method
 
 .PARAMETER AutoCommit
-  Automatically commit changes without prompting
+  Automatically commit all changes without prompting
 
-.PARAMETER GitHubMethod
-  GitHub authentication method: 'ssh', 'https', or 'auto' (default: 'auto')
+.PARAMETER CommitMessage
+  Custom commit message (if not provided, will prompt or use default)
 
-.PARAMETER Help
-  Show this help message
+.PARAMETER ForceCommit
+  Force commit even if no changes detected (creates empty commit)
+
+.PARAMETER UseHttps
+  Force use HTTPS for GitHub operations (instead of SSH).
+  Useful when SSH authentication is not configured or fails.
+
+.PARAMETER UseSsh
+  Force use SSH for GitHub operations (default if auto-detection fails).
+  Requires SSH key to be set up and added to GitHub.
 
 .EXAMPLE
   .\push-to-github.ps1
-  Push with auto-detected GitHub authentication
+  Push with auto-detected authentication method (preserves current remote)
 
 .EXAMPLE
-  .\push-to-github.ps1 -AutoCommit -CommitMessage "Update infrastructure"
-  Auto-commit with custom message and push
+  .\push-to-github.ps1 -AutoCommit
+  Auto-commit and push with default message
 
 .EXAMPLE
-  .\push-to-github.ps1 -GitHubMethod https
-  Force use HTTPS for GitHub push
+  .\push-to-github.ps1 -CommitMessage "Update deployment scripts"
+  Commit with custom message and push
+
+.EXAMPLE
+  .\push-to-github.ps1 -AutoCommit -CommitMessage "Full repository commit" -ForceCommit
+  Force commit everything and push
+
+.EXAMPLE
+  .\push-to-github.ps1 -UseHttps
+  Force use HTTPS authentication (bypasses SSH)
+
+.EXAMPLE
+  .\push-to-github.ps1 -UseSsh
+  Force use SSH authentication (requires SSH key setup)
 
 .NOTES
-  - The script automatically falls back from SSH to HTTPS if SSH push fails
-  - HTTPS requires credential helper: git config --global credential.helper wincred
-  - SSH requires SSH key at: https://github.com/settings/keys
+  - The script automatically falls back from SSH to HTTPS if SSH fails
+  - HTTPS requires credential helper or personal access token
+  - SSH requires SSH key to be added to GitHub: https://github.com/settings/keys
 #>
 
 param(
-    [string]$CommitMessage = "",
     [switch]$AutoCommit = $false,
-    [switch]$Help = $false,
-    [ValidateSet('ssh', 'https', 'auto')]
-    [string]$GitHubMethod = 'auto'
+    [string]$CommitMessage = "",
+    [switch]$ForceCommit = $false,
+    [switch]$UseHttps = $false,
+    [switch]$UseSsh = $false
 )
 
 $ErrorActionPreference = "Stop"
 
-# Run from the script's directory (repo root) so git commands always see .git
-$RepoRoot = (Resolve-Path $PSScriptRoot).Path
-Set-Location $RepoRoot
-
-# ============================================================================
-# HELP FUNCTION
-# ============================================================================
-
-function Show-Help {
-    Write-Host ""
-    Write-Host "===============================================================" -ForegroundColor Cyan
-    Write-Host "   RAG Infrastructure - Push to GitHub" -ForegroundColor Yellow
-    Write-Host "===============================================================" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "SYNOPSIS:" -ForegroundColor Yellow
-    Write-Host "  Pushes rag-infrastructure project to GitHub"
-    Write-Host ""
-    Write-Host "PARAMETERS:" -ForegroundColor Yellow
-    Write-Host "  -CommitMessage      Custom commit message for git push"
-    Write-Host "  -AutoCommit         Automatically commit changes without prompting"
-    Write-Host "  -GitHubMethod       GitHub auth method: 'ssh', 'https', or 'auto' (default: 'auto')"
-    Write-Host "  -Help              Show this help message"
-    Write-Host ""
-    Write-Host "EXAMPLES:" -ForegroundColor Yellow
-    Write-Host "  .\push-to-github.ps1"
-    Write-Host "  .\push-to-github.ps1 -AutoCommit -CommitMessage 'Update infrastructure'"
-    Write-Host "  .\push-to-github.ps1 -GitHubMethod https"
-    Write-Host ""
-    Write-Host "GITHUB REPO:" -ForegroundColor Yellow
-    Write-Host "  https://github.com/theaicompany007/rag-infrastructure"
-    Write-Host ""
-    exit 0
-}
-
-if ($Help) {
-    Show-Help
-}
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
+# GitHub repository URLs
 $GitHubRepoSsh = "git@github.com:theaicompany007/rag-infrastructure.git"
 $GitHubRepoHttps = "https://github.com/theaicompany007/rag-infrastructure.git"
 
-# Determine which GitHub method to use
+# Determine which method to use
 $useHttpsMethod = $false
-if ($GitHubMethod -eq 'https') {
+if ($UseHttps) {
     $useHttpsMethod = $true
-} elseif ($GitHubMethod -eq 'ssh') {
+} elseif ($UseSsh) {
     $useHttpsMethod = $false
 } else {
     # Auto-detect: check current remote and preserve if working
     $currentRemote = git config --get remote.origin.url 2>$null
     if ($currentRemote -match "^https://") {
         $useHttpsMethod = $true
-        Write-Host "  [INFO] Auto-detected: Using HTTPS (current remote is HTTPS)" -ForegroundColor Cyan
+        Write-Host "[INFO] Auto-detected: Using HTTPS (current remote is HTTPS)" -ForegroundColor Cyan
     } elseif ($currentRemote -match "^git@") {
         $useHttpsMethod = $false
-        Write-Host "  [INFO] Auto-detected: Using SSH (current remote is SSH)" -ForegroundColor Cyan
+        Write-Host "[INFO] Auto-detected: Using SSH (current remote is SSH)" -ForegroundColor Cyan
     } else {
         # Default to SSH if we can't determine
         $useHttpsMethod = $false
-        Write-Host "  [INFO] Auto-detected: Defaulting to SSH" -ForegroundColor Cyan
+        Write-Host "[INFO] Auto-detected: Defaulting to SSH" -ForegroundColor Cyan
     }
 }
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-function Write-Info {
-    param([string]$Message)
-    Write-Host "  [INFO] $Message" -ForegroundColor Cyan
-}
-
-function Write-Success {
-    param([string]$Message)
-    Write-Host "  [OK] $Message" -ForegroundColor Green
-}
-
-function Write-Error {
-    param([string]$Message)
-    Write-Host "  [ERROR] $Message" -ForegroundColor Red
-}
-
-function Write-Warning {
-    param([string]$Message)
-    Write-Host "  [WARN] $Message" -ForegroundColor Yellow
-}
-
+# Function to configure git remote (supports both SSH and HTTPS)
 function Configure-GitRemote {
     param([bool]$UseHttps)
     
+    $currentRemote = git config --get remote.origin.url 2>$null
+    
     if ($UseHttps) {
-        Write-Info "Configuring git remote to use HTTPS..."
-        $currentRemote = git config --get remote.origin.url 2>$null
-        
+        Write-Host "[INFO] Configuring git remote to use HTTPS..." -ForegroundColor Cyan
         if ($currentRemote -match "^git@") {
-            Write-Info "Current remote uses SSH, switching to HTTPS..."
+            Write-Host "[INFO] Current remote uses SSH, switching to HTTPS..." -ForegroundColor Yellow
             git remote set-url origin $GitHubRepoHttps
-            Write-Success "Git remote configured to use HTTPS"
+            Write-Host "[OK] Git remote configured to use HTTPS" -ForegroundColor Green
         } elseif ($currentRemote -match "^https://") {
-            Write-Info "Git remote already uses HTTPS"
+            Write-Host "[INFO] Git remote already uses HTTPS" -ForegroundColor Green
         } else {
-            Write-Info "Setting remote to HTTPS URL..."
+            Write-Host "[INFO] Setting remote to HTTPS URL..." -ForegroundColor Cyan
             git remote set-url origin $GitHubRepoHttps
-            Write-Success "Git remote configured to use HTTPS"
+            Write-Host "[OK] Git remote configured to use HTTPS" -ForegroundColor Green
         }
     } else {
-        Write-Info "Configuring git remote to use SSH..."
-        $currentRemote = git config --get remote.origin.url 2>$null
-        
+        Write-Host "[INFO] Configuring git remote to use SSH..." -ForegroundColor Cyan
         if ($currentRemote -match "^https://") {
-            Write-Info "Current remote uses HTTPS, switching to SSH..."
+            Write-Host "[INFO] Current remote uses HTTPS, switching to SSH..." -ForegroundColor Yellow
             git remote set-url origin $GitHubRepoSsh
-            Write-Success "Git remote configured to use SSH"
+            Write-Host "[OK] Git remote configured to use SSH" -ForegroundColor Green
         } elseif ($currentRemote -match "^git@") {
-            Write-Info "Git remote already uses SSH"
+            Write-Host "[INFO] Git remote already uses SSH" -ForegroundColor Green
         } else {
-            Write-Info "Setting remote to SSH URL..."
+            Write-Host "[INFO] Setting remote to SSH URL..." -ForegroundColor Cyan
             git remote set-url origin $GitHubRepoSsh
-            Write-Success "Git remote configured to use SSH"
+            Write-Host "[OK] Git remote configured to use SSH" -ForegroundColor Green
         }
     }
 }
 
+# Function to test SSH connection to GitHub
 function Test-GitHubSshConnection {
-    Write-Info "Testing SSH connection to GitHub..."
+    Write-Host "[INFO] Testing SSH connection to GitHub..." -ForegroundColor Cyan
     
+    # Clear any previous errors
     $Error.Clear()
+    
+    # Temporarily change error action to silently continue so we can capture the output
     $oldErrorAction = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
     
     try {
+        # Run SSH test and capture all output (stdout and stderr)
         $testResult = & ssh -T git@github.com 2>&1
         $exitCode = $LASTEXITCODE
+        
+        # Also check PowerShell's $Error variable for the message
         $errorMessages = $Error | ForEach-Object { $_.Exception.Message -join " " }
         
+        # Convert output to string for pattern matching
+        # Handle both array and string outputs
         $outputString = ""
         if ($testResult) {
             if ($testResult -is [System.Array]) {
@@ -194,60 +161,96 @@ function Test-GitHubSshConnection {
             }
         }
         
+        # Check error messages as well (PowerShell may have captured it)
         $allOutput = "$outputString $errorMessages"
         
+        # GitHub returns exit code 1 even on successful authentication
+        # The message "You've successfully authenticated" indicates success
         if ($allOutput -match "successfully authenticated" -or $outputString -match "successfully authenticated") {
-            Write-Success "SSH connection to GitHub verified"
+            Write-Host "[OK] SSH connection to GitHub verified" -ForegroundColor Green
             return $true
         } elseif ($exitCode -eq 0 -or $exitCode -eq 1) {
-            Write-Success "SSH connection to GitHub works"
+            # Exit code 0 or 1 usually means connection succeeded
+            # Even if we don't see the exact message, these exit codes indicate success
+            Write-Host "[OK] SSH connection to GitHub works" -ForegroundColor Green
             return $true
         } else {
-            Write-Warning "SSH connection to GitHub may not be configured (exit code: $exitCode)"
+            Write-Host "[WARN] SSH connection to GitHub may not be configured (exit code: $exitCode)" -ForegroundColor Yellow
+            if ($outputString) {
+                Write-Host "[WARN] Output: $outputString" -ForegroundColor Yellow
+            }
+            Write-Host "[INFO] To set up SSH for GitHub:" -ForegroundColor Cyan
+            Write-Host "[INFO]   1. Generate SSH key: ssh-keygen -t ed25519 -C 'your_email@example.com'" -ForegroundColor Gray
+            Write-Host "[INFO]   2. Add to ssh-agent: ssh-add ~/.ssh/id_ed25519" -ForegroundColor Gray
+            Write-Host "[INFO]   3. Add public key to GitHub: https://github.com/settings/keys" -ForegroundColor Gray
+            Write-Host "[INFO]   4. Test: ssh -T git@github.com" -ForegroundColor Gray
             return $false
         }
     } catch {
+        # PowerShell may treat stderr output as an exception, but check the message
         $errorMessage = $_.Exception.Message
-        if ($errorMessage -match "successfully authenticated") {
-            Write-Success "SSH connection to GitHub verified"
+        
+        # Check error record if available
+        $errorRecord = $_
+        $fullErrorText = ""
+        if ($errorRecord.ErrorRecord) {
+            $fullErrorText = $errorRecord.ErrorRecord.ToString()
+        } elseif ($errorRecord.Exception) {
+            $fullErrorText = $errorRecord.Exception.ToString()
+        }
+        
+        # Combine all error text for pattern matching
+        $allErrorText = "$errorMessage $fullErrorText"
+        
+        if ($allErrorText -match "successfully authenticated") {
+            Write-Host "[OK] SSH connection to GitHub verified" -ForegroundColor Green
             return $true
         } else {
-            Write-Warning "SSH connection test encountered an error"
+            Write-Host "[WARN] SSH connection test encountered an error" -ForegroundColor Yellow
+            Write-Host "[WARN] Error: $errorMessage" -ForegroundColor Yellow
+            Write-Host "[INFO] To set up SSH for GitHub:" -ForegroundColor Cyan
+            Write-Host "[INFO]   1. Generate SSH key: ssh-keygen -t ed25519 -C 'your_email@example.com'" -ForegroundColor Gray
+            Write-Host "[INFO]   2. Add to ssh-agent: ssh-add ~/.ssh/id_ed25519" -ForegroundColor Gray
+            Write-Host "[INFO]   3. Add public key to GitHub: https://github.com/settings/keys" -ForegroundColor Gray
+            Write-Host "[INFO]   4. Test: ssh -T git@github.com" -ForegroundColor Gray
             return $false
         }
     } finally {
+        # Restore original error action preference
         $ErrorActionPreference = $oldErrorAction
     }
 }
 
-# ============================================================================
-# MAIN: PUSH TO GITHUB
-# ============================================================================
-
 Write-Host ""
-Write-Host "===============================================================" -ForegroundColor Cyan
-Write-Host "   Pushing RAG Infrastructure to GitHub" -ForegroundColor Yellow
-Write-Host "===============================================================" -ForegroundColor Cyan
+Write-Host "=======================================================" -ForegroundColor Cyan
+Write-Host "   Push to GitHub" -ForegroundColor Yellow
+Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Ensure we're in a git repo (must have .git directory, and git must see it)
-if (-not (Test-Path (Join-Path $RepoRoot ".git"))) {
-    Write-Error "Not a git repository: no .git in $RepoRoot"
-    Write-Info "Run this script from the rag-infrastructure folder that contains .git"
-    Write-Info "Example: cd C:\raaj\kcube_consulting_labs\onlyne-reputation\rag-infrastructure"
+# Check if we're in a git repository
+if (-not (Test-Path ".git")) {
+    Write-Host "[ERROR] Not in a git repository" -ForegroundColor Red
+    Write-Host "[TIP] Run this script from the project root directory" -ForegroundColor Yellow
     exit 1
 }
-$errPrev = $ErrorActionPreference
-$ErrorActionPreference = 'SilentlyContinue'
-$gitOut = git rev-parse --is-inside-work-tree 2>&1
-$gitExit = $LASTEXITCODE
-$ErrorActionPreference = $errPrev
-if ($gitExit -ne 0) {
-    Write-Error "Git does not see a repository here. Repo path used: $RepoRoot"
-    Write-Info "Run from the repo root: cd path\to\rag-infrastructure"
-    Write-Info "Do NOT delete .git - that removes your repo and history."
+
+# Get project name from current directory
+$ProjectName = Split-Path -Leaf (Get-Location)
+Write-Host "[INFO] Project: $ProjectName" -ForegroundColor Cyan
+Write-Host ""
+
+# Check git remote
+Write-Host "[CHECK] Checking git remote..." -ForegroundColor Yellow
+$remoteUrl = git remote get-url origin 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] No 'origin' remote configured" -ForegroundColor Red
+    Write-Host "[TIP] Configure git remote first:" -ForegroundColor Yellow
+    Write-Host '   git remote add origin "your-github-repo-url"' -ForegroundColor Gray
     exit 1
 }
+
+Write-Host "[OK] Remote: $remoteUrl" -ForegroundColor Green
+Write-Host ""
 
 # Configure git remote based on selected method
 Configure-GitRemote -UseHttps $useHttpsMethod
@@ -256,202 +259,270 @@ Configure-GitRemote -UseHttps $useHttpsMethod
 if (-not $useHttpsMethod) {
     $sshWorks = Test-GitHubSshConnection
     if (-not $sshWorks) {
-        Write-Warning "SSH connection to GitHub may not be working, but continuing..."
-        Write-Info "If push fails, the script will automatically try HTTPS as fallback"
+        Write-Host "[WARN] SSH connection to GitHub may not be working, but continuing..." -ForegroundColor Yellow
+        Write-Host "[INFO] If push fails, the script will automatically try HTTPS as fallback" -ForegroundColor Cyan
+    }
+} else {
+    Write-Host "[INFO] Using HTTPS method - skipping SSH connection test" -ForegroundColor Cyan
+}
+
+Write-Host ""
+
+# Check git status
+Write-Host "[CHECK] Checking git status..." -ForegroundColor Yellow
+$status = git status --porcelain
+$branch = git rev-parse --abbrev-ref HEAD
+
+Write-Host "[INFO] Branch: $branch" -ForegroundColor Cyan
+
+# Check for any changes (staged, unstaged, or untracked)
+$hasChanges = $false
+if ($status) {
+    $statusLines = $status -split "`n" | Where-Object { $_.Trim() -ne "" }
+    if ($statusLines) {
+        $hasChanges = $true
+        $changedFiles = $statusLines.Count
+        Write-Host "[INFO] Changes detected: $changedFiles file(s)" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Changed files:" -ForegroundColor Gray
+        git status --short | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        Write-Host ""
     }
 }
 
-# Check git status and ensure we push main only
-$status = git status --porcelain
-$branch = git rev-parse --abbrev-ref HEAD
-if ($branch -ne "main") {
-    Write-Error "You are on branch '$branch'. This script is set up to push 'main' only."
-    Write-Info "Switch to main:  git checkout main"
-    Write-Info "Or rename current branch to main:  git branch -m $branch main   then   git push origin -u main"
-    exit 1
-}
-
-$hasChanges = $status -and ($status.Trim() -ne "")
-
 if ($hasChanges) {
-    Write-Info "Changes detected, committing..."
     
+    # Handle committing
+    $shouldCommit = $false
     if ($AutoCommit) {
+        $shouldCommit = $true
         if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-            $CommitMessage = "Update RAG infrastructure - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            $CommitMessage = "Update RAG infrastructure"
         }
     } else {
-        if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-            $CommitMessage = Read-Host "Enter commit message (or press Enter for default)"
+        $response = Read-Host "Commit and push these changes? (y/n)"
+        if ($response -eq 'y' -or $response -eq 'Y') {
+            $shouldCommit = $true
             if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
-                $CommitMessage = "Update RAG infrastructure - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                $CommitMessage = Read-Host "Enter commit message (or press Enter for default)"
+                if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
+                    $CommitMessage = "Update RAG infrastructure"
+                }
             }
         }
     }
     
-    git add -A
-    git commit -m "$CommitMessage"
-    Write-Success "Changes committed"
+    if ($shouldCommit) {
+        Write-Host ""
+        Write-Host "[COMMIT] Committing all changes..." -ForegroundColor Yellow
+        
+        # Stage all changes (including new files, modified files, and deleted files)
+        Write-Host "  Staging all changes..." -ForegroundColor Cyan
+        git add -A
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to stage changes" -ForegroundColor Red
+            exit 1
+        }
+        
+        # Commit with message
+        Write-Host "  Committing with message: $CommitMessage" -ForegroundColor Cyan
+        git commit -m "$CommitMessage"
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to commit changes" -ForegroundColor Red
+            Write-Host "[TIP] This might happen if there are no changes to commit" -ForegroundColor Yellow
+            exit 1
+        }
+        Write-Host "[OK] All changes committed successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[SKIP] Skipping commit" -ForegroundColor Yellow
+    }
 } else {
-    Write-Info "No local changes to commit"
+    Write-Host "[OK] Working directory clean - no changes to commit" -ForegroundColor Green
+    Write-Host ""
+    
+    if ($ForceCommit) {
+        Write-Host "[WARN] Force commit requested - will create empty commit" -ForegroundColor Yellow
+        Write-Host ""
+        
+        if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
+            if ($AutoCommit) {
+                $CommitMessage = "Empty commit - force update"
+            } else {
+                $CommitMessage = Read-Host "Enter commit message for empty commit"
+                if ([string]::IsNullOrWhiteSpace($CommitMessage)) {
+                    $CommitMessage = "Empty commit - force update"
+                }
+            }
+        }
+        
+        Write-Host "[COMMIT] Creating empty commit..." -ForegroundColor Yellow
+        git commit --allow-empty -m "$CommitMessage"
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to create empty commit" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "[OK] Empty commit created" -ForegroundColor Green
+    } else {
+        Write-Host "[TIP] If you want to commit everything, make sure you have changes in the repository" -ForegroundColor Cyan
+        Write-Host "[TIP] Or use -ForceCommit to create an empty commit" -ForegroundColor Cyan
+    }
+}
+
+# Check if we need to push
+Write-Host ""
+Write-Host "[CHECK] Checking if push is needed..." -ForegroundColor Yellow
+$localCommit = git rev-parse HEAD
+
+# Try to get remote commit, but handle SSH errors gracefully
+$ErrorActionPreference = "SilentlyContinue"
+$remoteCommit = git ls-remote origin $branch 2>&1 | Select-Object -First 1
+$lsRemoteExitCode = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+
+if ($lsRemoteExitCode -eq 0 -and $remoteCommit -and $remoteCommit -notmatch "Permission denied" -and $remoteCommit -notmatch "fatal:") {
+    $remoteHash = ($remoteCommit -split '\s+')[0]
+    if ($localCommit -eq $remoteHash) {
+        Write-Host "[OK] Local and remote are in sync" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "[INFO] No push needed. Repository is up to date." -ForegroundColor Cyan
+        exit 0
+    } else {
+        Write-Host "[INFO] Local commits ahead of remote" -ForegroundColor Yellow
+    }
+} else {
+    if ($remoteCommit -match "Permission denied" -or $remoteCommit -match "fatal:") {
+        Write-Host "[WARN] Could not check remote status (SSH authentication issue)" -ForegroundColor Yellow
+        Write-Host "[INFO] Will attempt to push anyway..." -ForegroundColor Cyan
+    } else {
+        Write-Host "[INFO] No remote branch found, will push new branch" -ForegroundColor Yellow
+    }
 }
 
 # Push to GitHub with fallback logic
+Write-Host ""
 $pushMethod = if ($useHttpsMethod) { "HTTPS" } else { "SSH" }
-Write-Info "Pushing to GitHub via $pushMethod..."
-
-# Pull first so we don't get "rejected (fetch first)"
-$pullErr = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-$null = & git pull origin $branch --no-edit 2>&1
-$ErrorActionPreference = $pullErr
+Write-Host "[PUSH] Pushing to GitHub via $pushMethod..." -ForegroundColor Yellow
 
 $pushSucceeded = $false
 $pushError = $null
 
 try {
-    $oldErrorAction = $ErrorActionPreference
+    # Suppress error output and capture both stdout and stderr
     $ErrorActionPreference = "SilentlyContinue"
-    
     $pushOutput = & git push origin $branch 2>&1 | Out-String
-    $pushExitCode = $LASTEXITCODE
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
     
-    $ErrorActionPreference = $oldErrorAction
+    # Display output
+    if ($pushOutput) {
+        Write-Host $pushOutput.Trim()
+    }
     
-    $filteredOutput = $pushOutput -replace "git: 'credential-manager-core' is not a git command[^\n]*\n?", "" -replace "See 'git --help'[^\n]*\n?", ""
-    
-    $filteredOutput -split "`n" | ForEach-Object {
-        $line = $_.Trim()
-        if ($line -and $line -notmatch "^$" -and $line -notmatch "credential-manager-core") {
-            Write-Host $line
+    # Check for actual errors vs informational messages
+    $hasRealError = $false
+    if ($pushOutput) {
+        $pushOutputLines = $pushOutput -split "`n" | Where-Object { $_.Trim() }
+        foreach ($line in $pushOutputLines) {
+            $trimmedLine = $line.Trim()
+            # Check for real errors (not "Everything up-to-date")
+            if ($trimmedLine -match "Permission denied" -or 
+                $trimmedLine -match "fatal:.*Permission denied" -or 
+                $trimmedLine -match "ERROR: Repository not found" -or 
+                ($trimmedLine -match "fatal:" -and $trimmedLine -notmatch "Everything up-to-date")) {
+                $hasRealError = $true
+                break
+            }
         }
     }
     
-    if ($pushOutput -match "Permission denied" -or $pushOutput -match "fatal:.*Permission denied" -or $pushOutput -match "ERROR: Repository not found" -or $pushOutput -match "fatal:.*authentication failed") {
-        throw "Git push authentication failed"
-    }
-    
-    if ($pushExitCode -eq 0) {
+    # Check exit code - 0 means success (even if "Everything up-to-date")
+    if ($exitCode -eq 0 -or $pushOutput -match "Everything up-to-date" -or $pushOutput -match "Already up to date") {
         $pushSucceeded = $true
-        Write-Success "Pushed to GitHub successfully via $pushMethod"
-    } elseif ($pushOutput -match "Everything up-to-date") {
-        $pushSucceeded = $true
-        Write-Success "Repository is up-to-date (nothing to push)"
-    } elseif ($pushOutput -match "main -> main" -or $pushOutput -match "->") {
-        $pushSucceeded = $true
-        Write-Success "Pushed to GitHub successfully via $pushMethod"
-    } else {
-        # On push exit 1, try pull then retry (unless it was an auth failure)
-        $isAuthFailure = $pushOutput -match "Permission denied|Repository not found|authentication failed"
-        if ($pushExitCode -eq 1 -and -not $isAuthFailure) {
-            Write-Info "Push was rejected; pulling remote changes then retrying push..."
-            $ErrorActionPreference = "SilentlyContinue"
-            $null = & git pull origin $branch --rebase 2>&1
-            $pushOutput = & git push origin $branch 2>&1 | Out-String
-            $pushExitCode = $LASTEXITCODE
-            $ErrorActionPreference = $oldErrorAction
-            if ($pushExitCode -eq 0 -or $pushOutput -match "Everything up-to-date|->") {
-                $pushSucceeded = $true
-                Write-Success "Pushed to GitHub successfully via $pushMethod (after pull)"
-            } else {
-                if ($pushOutput -and $pushOutput.Trim()) {
-                    Write-Host "  Git output:" -ForegroundColor Yellow
-                    $pushOutput -split "`n" | ForEach-Object { $l = $_.Trim(); if ($l) { Write-Host "    $l" -ForegroundColor Gray } }
-                }
-                if ($pushOutput -match "rejected|non-fast-forward|unrelated histories") {
-                    Write-Info "To overwrite remote with your local branch: git push origin $branch --force"
-                }
-                throw "Git push failed with exit code $pushExitCode"
-            }
+        if ($pushOutput -match "Everything up-to-date" -or $pushOutput -match "Already up to date") {
+            Write-Host "[OK] Repository is already up-to-date on GitHub" -ForegroundColor Green
         } else {
-            if ($pushOutput -and $pushOutput.Trim()) {
-                Write-Host "  Git output:" -ForegroundColor Yellow
-                $pushOutput -split "`n" | ForEach-Object { $l = $_.Trim(); if ($l) { Write-Host "    $l" -ForegroundColor Gray } }
-            }
-            throw "Git push failed with exit code $pushExitCode"
+            Write-Host "[OK] Pushed to GitHub successfully via $pushMethod" -ForegroundColor Green
+        }
+    } elseif ($hasRealError) {
+        throw "Git push failed: $pushOutput"
+    } else {
+        # If exit code is non-zero but no real error detected, still check for success messages
+        if ($pushOutput -match "Everything up-to-date" -or $pushOutput -match "Already up to date") {
+            $pushSucceeded = $true
+            Write-Host "[OK] Repository is already up-to-date on GitHub" -ForegroundColor Green
+        } else {
+            throw "Git push failed with exit code $exitCode"
         }
     }
 } catch {
     $pushError = $_.Exception.Message
-    Write-Warning "Push via $pushMethod failed: $pushError"
-    if ($pushOutput -and $pushOutput.Trim() -and $pushError -notmatch "Git push (via HTTPS )?also failed") {
-        Write-Host "  Git output:" -ForegroundColor Yellow
-        $pushOutput -split "`n" | ForEach-Object { $l = $_.Trim(); if ($l) { Write-Host "    $l" -ForegroundColor Gray } }
-    }
+    Write-Host "[WARN] Push via $pushMethod failed: $pushError" -ForegroundColor Yellow
     
     # If SSH failed, try HTTPS as fallback
     if (-not $useHttpsMethod) {
-        Write-Info "Attempting fallback to HTTPS..."
+        Write-Host "[INFO] Attempting fallback to HTTPS..." -ForegroundColor Cyan
         Configure-GitRemote -UseHttps $true
         
         try {
-            $oldErrorAction = $ErrorActionPreference
+            Write-Host "[PUSH] Retrying push via HTTPS..." -ForegroundColor Yellow
+            
+            # Suppress error output and capture both stdout and stderr
             $ErrorActionPreference = "SilentlyContinue"
+            $retryOutput = & git push origin $branch 2>&1 | Out-String
+            $retryExitCode = $LASTEXITCODE
+            $ErrorActionPreference = "Stop"
             
-            Write-Info "Retrying push via HTTPS..."
-            $pushOutputHttps = & git push origin $branch 2>&1 | Out-String
-            $pushExitCodeHttps = $LASTEXITCODE
+            # Display output
+            if ($retryOutput) {
+                Write-Host $retryOutput.Trim()
+            }
             
-            $ErrorActionPreference = $oldErrorAction
-            
-            $filteredOutputHttps = $pushOutputHttps -replace "git: 'credential-manager-core' is not a git command[^\n]*\n?", "" -replace "See 'git --help'[^\n]*\n?", ""
-            
-            $filteredOutputHttps -split "`n" | ForEach-Object {
-                $line = $_.Trim()
-                if ($line -and $line -notmatch "^$" -and $line -notmatch "credential-manager-core") {
-                    Write-Host $line
+            # Check exit code - 0 means success (even if "Everything up-to-date")
+            if ($retryExitCode -eq 0 -or $retryOutput -match "Everything up-to-date" -or $retryOutput -match "Already up to date") {
+                $pushSucceeded = $true
+                if ($retryOutput -match "Everything up-to-date" -or $retryOutput -match "Already up to date") {
+                    Write-Host "[OK] Repository is already up-to-date on GitHub (HTTPS)" -ForegroundColor Green
+                } else {
+                    Write-Host "[OK] Pushed to GitHub successfully via HTTPS (fallback)" -ForegroundColor Green
                 }
-            }
-            
-            if ($pushOutputHttps -match "Permission denied" -or $pushOutputHttps -match "fatal:.*Permission denied" -or $pushOutputHttps -match "ERROR: Repository not found" -or $pushOutputHttps -match "fatal:.*authentication failed") {
-                throw "Git push authentication failed"
-            }
-            
-            if ($pushExitCodeHttps -eq 0) {
-                $pushSucceeded = $true
-                Write-Success "Pushed to GitHub successfully via HTTPS (fallback)"
-            } elseif ($pushOutputHttps -match "Everything up-to-date") {
-                $pushSucceeded = $true
-                Write-Success "Repository is up-to-date (nothing to push)"
-            } elseif ($pushOutputHttps -match "main -> main" -or $pushOutputHttps -match "->") {
-                $pushSucceeded = $true
-                Write-Success "Pushed to GitHub successfully via HTTPS (fallback)"
             } else {
-                throw "Git push via HTTPS also failed with exit code $pushExitCodeHttps"
+                throw "Git push via HTTPS also failed with exit code $retryExitCode"
             }
         } catch {
-            Write-Error "Both SSH and HTTPS push failed"
-            Write-Error "SSH error: $pushError"
-            Write-Error "HTTPS error: $($_.Exception.Message)"
-            if ($pushOutputHttps -and $pushOutputHttps.Trim()) {
-                Write-Info "Git push (HTTPS) raw output:"
-                $pushOutputHttps -split "`n" | ForEach-Object { $l = $_.Trim(); if ($l) { Write-Host "    $l" -ForegroundColor Gray } }
-            }
-            Write-Info "Troubleshooting:"
-            Write-Info "  1. For SSH: Set up SSH key at https://github.com/settings/keys"
-            Write-Info "  2. For HTTPS: Use credential helper or personal access token"
-            Write-Info "  3. Or use -GitHubMethod https parameter to force HTTPS"
-            throw
+            Write-Host "[ERROR] Both SSH and HTTPS push failed" -ForegroundColor Red
+            Write-Host "[ERROR] SSH error: $pushError" -ForegroundColor Red
+            Write-Host "[ERROR] HTTPS error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "[INFO] Troubleshooting:" -ForegroundColor Cyan
+            Write-Host "[INFO]   1. For SSH: Set up SSH key at https://github.com/settings/keys" -ForegroundColor Gray
+            Write-Host "[INFO]   2. For HTTPS: Use credential helper or personal access token" -ForegroundColor Gray
+            Write-Host "[INFO]   3. Or use -UseHttps parameter to force HTTPS" -ForegroundColor Gray
+            exit 1
         }
     } else {
-        Write-Error "Failed to push to GitHub via HTTPS: $pushError"
-        if ($pushOutput -and $pushOutput.Trim()) {
-            Write-Host "  Git output:" -ForegroundColor Yellow
-            $pushOutput -split "`n" | ForEach-Object { $l = $_.Trim(); if ($l) { Write-Host "    $l" -ForegroundColor Gray } }
-        }
-        Write-Info "Troubleshooting:"
-        Write-Info "  1. Check your GitHub credentials (use a Personal Access Token as password)"
-        Write-Info "  2. Use credential helper: git config --global credential.helper wincred"
-        Write-Info "  3. Or try SSH: -GitHubMethod ssh"
-        throw
+        # HTTPS failed, no fallback
+        Write-Host "[ERROR] Failed to push to GitHub via HTTPS: $pushError" -ForegroundColor Red
+        Write-Host "[INFO] Troubleshooting:" -ForegroundColor Cyan
+        Write-Host "[INFO]   1. Check your GitHub credentials" -ForegroundColor Gray
+        Write-Host "[INFO]   2. Use credential helper: git config --global credential.helper wincred" -ForegroundColor Gray
+        Write-Host "[INFO]   3. Or try SSH: .\push-to-github.ps1 -UseSsh" -ForegroundColor Gray
+        exit 1
     }
 }
 
 if (-not $pushSucceeded) {
-    Write-Error "Push failed"
-    throw "Failed to push to GitHub"
+    Write-Host "[ERROR] Push failed" -ForegroundColor Red
+    exit 1
 }
 
+Write-Host "[OK] Successfully pushed to GitHub!" -ForegroundColor Green
 Write-Host ""
-Write-Success "Push to GitHub completed successfully!"
+Write-Host "[INFO] Repository: $remoteUrl" -ForegroundColor Cyan
+Write-Host "[INFO] Branch: $branch" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "=======================================================" -ForegroundColor Cyan
+Write-Host "[OK] Push Complete!" -ForegroundColor Green
+Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
