@@ -1,22 +1,19 @@
 #!/bin/bash
 # Infrastructure Management Script
-# Manages RAG Service, ChromaDB, Redis, Celery, and Ngrok
+# Manages RAG Service, ChromaDB, Redis, and Ngrok
 # Location: /home/postgres/rag-infrastructure/manage-infra.sh
 #
 # Usage:
 #   ./manage-infra.sh [start|stop|restart|rebuild|rebuild-rag|purge|status|...]
 #
 # Commands:
-#   start          - Start infrastructure services (RAG/ChromaDB/Redis/Celery)
+#   start          - Start infrastructure services (RAG/ChromaDB/Redis)
 #   stop           - Stop infrastructure services
 #   restart        - Restart infrastructure services
 #   rebuild        - Rebuild and restart all services
 #   rebuild-rag    - Rebuild and restart RAG service only
 #   purge          - Stop and remove containers, networks (keeps volumes)
 #   status         - Show status of infrastructure services
-#   enable-celery  - Enable Celery worker service
-#   disable-celery - Disable Celery worker service
-#   celery-status  - Check Celery worker status and queues
 #   enable-ngrok   - Enable ngrok service (systemd)
 #   disable-ngrok  - Disable ngrok service (systemd)
 #   ngrok-status   - Check ngrok service status and active tunnels
@@ -24,6 +21,7 @@
 # Notes:
 #   - Infrastructure must start BEFORE other projects (revenue/web/vani depend on it)
 #   - This project creates the shared-infra-network that other projects connect to
+#   - Celery Worker and Celery Beat run in VANI project (not here)
 #   - Purge only affects infrastructure project, not other projects
 #   - Ngrok runs as a systemd service on the host (not in Docker) to expose services
 
@@ -44,7 +42,7 @@ NC='\033[0m' # No Color
 
 print_header() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}  Infrastructure Management (RAG/ChromaDB/Redis/Celery/Ngrok)${NC}"
+    echo -e "${CYAN}  Infrastructure Management (RAG/ChromaDB/Redis/Ngrok)${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 }
@@ -81,10 +79,9 @@ cmd_start() {
     echo "  - RAG Service: http://localhost:8001"
     echo "  - ChromaDB: http://localhost:8000"
     echo "  - Redis: localhost:6379"
-    echo "  - Celery Worker: Processing VANI tasks (campaigns, crm_sync, workflows)"
-    echo "  - Celery Beat: Schedules VANI periodic tasks"
     echo ""
     echo -e "${YELLOW}💡 Note: Other projects (revenue/web/vani) can now connect via shared-infra-network${NC}"
+    echo -e "${YELLOW}💡 Note: Celery Worker and Celery Beat run in VANI project${NC}"
 }
 
 cmd_stop() {
@@ -197,7 +194,7 @@ cmd_status() {
     
     echo ""
     echo -e "${CYAN}Service Containers:${NC}"
-    for service in rag-service chroma redis celery-worker celery-beat; do
+    for service in rag-service chroma redis; do
         if docker ps --format "{{.Names}}" | grep -q "^${service}$"; then
             echo -e "${GREEN}✅ ${service} is running${NC}"
         else
@@ -248,84 +245,6 @@ cmd_status() {
                 done
             fi
         fi
-    fi
-}
-
-cmd_enable_celery() {
-    print_header
-    echo -e "${YELLOW}✅ Enabling Celery worker...${NC}"
-    echo ""
-    
-    check_compose_file
-    
-    # Update environment variable
-    if [ -f ".env.local" ]; then
-        if grep -q "^CELERY_ENABLED=" .env.local; then
-            sed -i.bak 's/^CELERY_ENABLED=.*/CELERY_ENABLED=true/' .env.local
-        else
-            echo "CELERY_ENABLED=true" >> .env.local
-        fi
-    else
-        echo "CELERY_ENABLED=true" >> .env.local
-    fi
-    
-    # Start or restart celery-worker
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d celery-worker
-    
-    echo ""
-    echo -e "${GREEN}✅ Celery worker enabled and started${NC}"
-}
-
-cmd_disable_celery() {
-    print_header
-    echo -e "${YELLOW}🛑 Disabling Celery worker...${NC}"
-    echo ""
-    
-    check_compose_file
-    
-    # Update environment variable
-    if [ -f ".env.local" ]; then
-        if grep -q "^CELERY_ENABLED=" .env.local; then
-            sed -i.bak 's/^CELERY_ENABLED=.*/CELERY_ENABLED=false/' .env.local
-        else
-            echo "CELERY_ENABLED=false" >> .env.local
-        fi
-    else
-        echo "CELERY_ENABLED=false" >> .env.local
-    fi
-    
-    # Stop celery-worker
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" stop celery-worker
-    
-    echo ""
-    echo -e "${GREEN}✅ Celery worker disabled and stopped${NC}"
-}
-
-cmd_celery_status() {
-    print_header
-    echo -e "${CYAN}📊 Celery Worker Status${NC}"
-    echo ""
-    
-    check_compose_file
-    
-    # Check if container is running
-    if docker ps --format "{{.Names}}" | grep -q "^celery-worker$"; then
-        echo -e "${GREEN}✅ Celery worker container is running${NC}"
-        echo ""
-        
-        # Try to inspect Celery
-        echo -e "${CYAN}Celery Worker Info:${NC}"
-        docker exec celery-worker celery -A app.config.celery_config.celery_app inspect active 2>/dev/null || echo "  (Unable to query - worker may be starting)"
-        
-        echo ""
-        echo -e "${CYAN}Queue Status:${NC}"
-        docker exec celery-worker celery -A app.config.celery_config.celery_app inspect stats 2>/dev/null | grep -A 5 "queues" || echo "  (Unable to query queue stats)"
-        
-    else
-        echo -e "${RED}❌ Celery worker container is not running${NC}"
-        echo ""
-        echo -e "${YELLOW}💡 Start with: ./manage-infra.sh start${NC}"
-        echo -e "${YELLOW}💡 Or enable with: ./manage-infra.sh enable-celery${NC}"
     fi
 }
 
@@ -602,15 +521,6 @@ case "${1:-}" in
     status)
         cmd_status
         ;;
-    enable-celery)
-        cmd_enable_celery
-        ;;
-    disable-celery)
-        cmd_disable_celery
-        ;;
-    celery-status)
-        cmd_celery_status
-        ;;
     enable-ngrok)
         cmd_enable_ngrok
         ;;
@@ -624,7 +534,7 @@ case "${1:-}" in
         cmd_fix_redis_misconf
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|rebuild|rebuild-rag|purge|status|enable-celery|disable-celery|celery-status|enable-ngrok|disable-ngrok|ngrok-status|fix-redis-misconf}"
+        echo "Usage: $0 {start|stop|restart|rebuild|rebuild-rag|purge|status|enable-ngrok|disable-ngrok|ngrok-status|fix-redis-misconf}"
         echo ""
         echo "Commands:"
         echo "  start             - Start infrastructure services (Docker)"
@@ -634,13 +544,12 @@ case "${1:-}" in
         echo "  rebuild-rag       - Rebuild and restart RAG service only (Docker)"
         echo "  purge             - Stop and remove containers/networks (keeps volumes)"
         echo "  status            - Show status of all services (Docker + Ngrok)"
-        echo "  enable-celery     - Enable Celery worker service (Docker)"
-        echo "  disable-celery   - Disable Celery worker service (Docker)"
-        echo "  celery-status    - Check Celery worker status and queues"
         echo "  enable-ngrok      - Enable ngrok service (systemd)"
         echo "  disable-ngrok     - Disable ngrok service (systemd)"
         echo "  ngrok-status      - Check ngrok service status and active tunnels"
         echo "  fix-redis-misconf - Fix Redis MISCONF (cannot persist to disk) error"
+        echo ""
+        echo "Note: Celery Worker and Celery Beat run in VANI project (not here)"
         exit 1
         ;;
 esac

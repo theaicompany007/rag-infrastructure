@@ -440,7 +440,7 @@ function Test-InfrastructureRunning {
     Check if infrastructure services are already running on the VM.
     
     .DESCRIPTION
-    Checks if any of the infrastructure containers (rag-service, chroma, redis, celery-worker)
+    Checks if any of the infrastructure containers (rag-service, chroma, redis)
     are currently running. This is used to determine whether to use 'restart' or 'start' command.
     
     .RETURNS
@@ -452,7 +452,7 @@ function Test-InfrastructureRunning {
     try {
         # Check if any infra containers are running
         # This checks after files are copied, so it works for both regular and fresh clone scenarios
-        $checkCmd = "docker ps --format '{{.Names}}' | grep -E '^(rag-service|chroma|redis|celery-worker)$' | wc -l"
+        $checkCmd = "docker ps --format '{{.Names}}' | grep -E '^(rag-service|chroma|redis)$' | wc -l"
         $runningCount = Invoke-SshCommand $checkCmd
         
         # Extract number from output (handles both gcloud and ssh output formats)
@@ -1108,15 +1108,6 @@ try {
         Write-Warning "Could not check RAG service health endpoint: $_"
     }
     
-    Write-Info "Checking Celery worker status..."
-    try {
-        $celeryStatusCmd = "cd $RemoteProjectPath; ./manage-infra.sh celery-status 2>&1"
-        $celeryStatus = Invoke-SshCommand $celeryStatusCmd
-        Write-Host $celeryStatus
-    } catch {
-        Write-Warning "Could not check Celery status: $_"
-    }
-    
     Write-Success "Status check completed"
 } catch {
     Write-Warning "Status check had issues: $_"
@@ -1141,10 +1132,7 @@ Write-Host "  Access services:" -ForegroundColor Cyan
 Write-Host "    - RAG Service: http://localhost:8001 (or configured URL)" -ForegroundColor Gray
 Write-Host "    - ChromaDB: http://localhost:8000" -ForegroundColor Gray
 Write-Host "    - Redis: localhost:6379" -ForegroundColor Gray
-Write-Host "    - Celery Worker: Processing VANI tasks" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  Manage Celery:" -ForegroundColor Cyan
-Write-Host "    ./manage-infra.sh enable-celery   # Enable Celery worker" -ForegroundColor Gray
-Write-Host "    ./manage-infra.sh disable-celery # Disable Celery worker" -ForegroundColor Gray
-Write-Host "    ./manage-infra.sh celery-status  # Check Celery status" -ForegroundColor Gray
+Write-Host "  Note: Celery Worker and Celery Beat run in VANI project" -ForegroundColor Yellow
+Write-Host "    Manage Celery: cd /home/postgres/vani && ./manage-vani.sh celery-status" -ForegroundColor Gray
 Write-Host ""

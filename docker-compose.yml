@@ -4,6 +4,7 @@ version: "3.8"
 # This project creates the shared-infra-network that other projects connect to
 # Project name: infra
 # Location: /home/postgres/rag-infrastructure/docker-compose.yml
+# Note: Celery Worker and Celery Beat run in VANI project
 
 services:
   # Python RAG Service
@@ -62,7 +63,7 @@ services:
       - shared-infra-network
     restart: unless-stopped
     # stop-writes-on-bgsave-error no: allow writes when RDB save fails (e.g. disk full/permissions)
-    # bind 0.0.0.0 so other containers (celery-worker, etc.) can connect
+    # bind 0.0.0.0 so other containers can connect
     command: redis-server --appendonly yes --stop-writes-on-bgsave-error no --bind 0.0.0.0
     volumes:
       - redis-data:/data
@@ -72,76 +73,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # Celery Worker for VANI campaign/CRM/workflow tasks
-  celery-worker:
-    build:
-      context: ../vani  # Build from VANI project directory
-      dockerfile: Dockerfile
-    container_name: celery-worker
-    env_file:
-      - ../vani/.env.local  # Use VANI's environment variables
-    environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - CELERY_ENABLED=${CELERY_ENABLED:-true}
-      - DOCKER_CONTAINER=true
-    networks:
-      - shared-infra-network
-    volumes:
-      # Mount VANI code so Celery can import task modules
-      - ../vani:/app/vani:ro
-    working_dir: /app/vani
-    command: >
-      sh -c "
-        if [ \"$$CELERY_ENABLED\" = \"true\" ]; then
-          celery -A app.config.celery_config.celery_app worker 
-            --loglevel=info 
-            --queues=campaigns,crm_sync,workflows
-            --hostname=celery-worker@%h
-        else
-          echo 'Celery worker disabled (CELERY_ENABLED=false)'
-          sleep infinity
-        fi
-      "
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.config.celery_config.celery_app inspect active || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # Celery Beat for VANI (scheduler: enqueues periodic tasks to Redis; worker runs them)
-  celery-beat:
-    build:
-      context: ../vani
-      dockerfile: Dockerfile
-    container_name: celery-beat
-    env_file:
-      - ../vani/.env.local
-    environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - DOCKER_CONTAINER=true
-    networks:
-      - shared-infra-network
-    volumes:
-      # Mount VANI code as read-only for imports
-      - ../vani:/app/vani:ro
-      # Mount writable volume for celerybeat-schedule file (outside read-only mount)
-      - celerybeat-data:/tmp/celerybeat-schedule
-    working_dir: /app/vani
-    command: celery -A app.config.celery_config.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule/celerybeat-schedule
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
 networks:
   shared-infra-network:
     name: shared-infra-network
@@ -150,6 +81,4 @@ networks:
 
 volumes:
   redis-data:
-    driver: local
-  celerybeat-data:
     driver: local

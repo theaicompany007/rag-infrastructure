@@ -1,14 +1,15 @@
 # RAG Infrastructure
 
-Shared infrastructure services for VANI and other projects, including RAG service, ChromaDB, Redis, Celery, and Ngrok.
+Shared infrastructure services for VANI and other projects, including RAG service, ChromaDB, Redis, and Ngrok.
 
 ## Services
 
 - **rag-service**: RAG API service (Docker)
 - **chroma**: ChromaDB vector database (Docker)
 - **redis**: Redis message broker and cache (Docker)
-- **celery-worker**: Celery worker for processing VANI campaign/CRM/workflow tasks (Docker)
 - **ngrok**: Ngrok tunnel service for exposing services publicly (systemd service on host)
+
+**Note:** Celery Worker and Celery Beat run in the VANI project (not here).
 
 ## Setup
 
@@ -73,16 +74,15 @@ Key variables:
 
 ## Management Commands
 
-### Docker Services (RAG/ChromaDB/Redis/Celery)
+### Docker Services (RAG/ChromaDB/Redis)
 ```bash
 ./manage-infra.sh start          # Start all Docker services
 ./manage-infra.sh stop           # Stop all Docker services
 ./manage-infra.sh restart        # Restart all Docker services
 ./manage-infra.sh status         # Show status of all services (Docker + Ngrok)
-./manage-infra.sh enable-celery  # Enable Celery worker (Docker)
-./manage-infra.sh disable-celery # Disable Celery worker (Docker)
-./manage-infra.sh celery-status  # Check Celery worker status
 ```
+
+**Note:** Celery management commands are in VANI project (`./manage-vani.sh enable-celery`, etc.)
 
 ### Ngrok Service (Host/Systemd)
 ```bash
@@ -166,10 +166,9 @@ tunnels:
 ## Integration with VANI
 
 VANI connects to this infrastructure via `shared-infra-network`:
-- Redis: `redis://redis:6379/0`
+- Redis: `redis://redis:6379/0` (used by VANI's Celery Worker and Celery Beat)
 - RAG Service: `http://rag-service:8000` (or configured URL)
 - ChromaDB: `chroma:8000`
-- Celery: Tasks are processed by celery-worker service
 - Ngrok: Exposes services publicly (managed separately as systemd service)
 
-VANI can fall back to sync mode (`USE_SYNC_MODE=true`) if Celery is unavailable.
+**Note:** VANI's Celery Worker and Celery Beat run in the VANI project and connect to Redis here via `shared-infra-network`.
