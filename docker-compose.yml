@@ -133,10 +133,10 @@ services:
     volumes:
       # Mount VANI code as read-only for imports
       - ../vani:/app/vani:ro
-      # Mount writable volume for celerybeat-schedule file
-      - celerybeat-data:/app/vani/celerybeat-schedule
+      # Mount writable volume for celerybeat-schedule file (outside read-only mount)
+      - celerybeat-data:/tmp/celerybeat-schedule
     working_dir: /app/vani
-    command: celery -A app.config.celery_config.celery_app beat --loglevel=info
+    command: celery -A app.config.celery_config.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule/celerybeat-schedule
     depends_on:
       redis:
         condition: service_healthy
