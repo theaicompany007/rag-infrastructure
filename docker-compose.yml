@@ -32,11 +32,12 @@ services:
     networks:
       - shared-infra-network
     healthcheck:
+      # RAG service loads embedding model + Chroma at startup; can take 60–90s on first run
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
 
   # ChromaDB Vector Database
   chroma:
@@ -76,8 +77,9 @@ services:
 networks:
   shared-infra-network:
     name: shared-infra-network
-    driver: bridge
-    # External network - can be referenced by other projects
+    external: true
+    # Use existing network (created by this project or another). When chroma/redis
+    # are already running, start only RAG: docker compose up -d --no-deps rag-service
 
 volumes:
   redis-data:

@@ -310,20 +310,33 @@ class RAGEngine:
             logger.error(f"Error adding documents to '{collection_name}': {e}")
             return False
     
-    def get_collection_count(self, collection_name: str) -> int:
-        """Get number of documents in a collection"""
-        collection = self.collections.get(collection_name)
-        if not collection:
-            return 0
-        
+    def list_all_collection_names(self) -> List[str]:
+        """List all collection names from ChromaDB (including on-demand ones e.g. xxx_company_profile)."""
         try:
-            if hasattr(collection, "count") and callable(getattr(collection, "count")):
+            raw = self.client.list_collections()
+            names = []
+            for c in raw:
+                if hasattr(c, "name"):
+                    names.append(c.name)
+                elif isinstance(c, dict) and "name" in c:
+                    names.append(c["name"])
+                else:
+                    names.append(str(c))
+            return names
+        except Exception as e:
+            logger.error(f"list_all_collection_names failed: {e}")
+            return list(self.collections.keys())
+
+    def get_collection_count(self, collection_name: str) -> int:
+        """Get number of documents in a collection (works for any collection in Chroma, not only pre-initialized)."""
+        try:
+            collection = self.collections.get(collection_name)
+            if collection and hasattr(collection, "count") and callable(getattr(collection, "count")):
                 return collection.count()
-            # collection is a name (str); use client
             col = self.client.get_collection(name=collection_name)
             return col.count() if hasattr(col, "count") and callable(getattr(col, "count")) else 0
         except Exception as e:
-            logger.error(f"Error getting count for '{collection_name}': {e}")
+            logger.debug(f"get_collection_count '{collection_name}': {e}")
             return 0
 
     def delete_documents(

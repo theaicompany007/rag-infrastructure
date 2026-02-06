@@ -634,15 +634,10 @@ async def query_rag(request: RAGQueryRequest):
 
 @app.get("/rag/collections", tags=["RAG"])
 async def get_collections():
-    """Get list of available collections with document counts"""
+    """Get list of all collections from ChromaDB with document counts (includes xxx_company_profile and other on-demand collections)."""
     rag = get_rag_engine()
-    
-    collections = {}
-    for name in rag.collections.keys():
-        collections[name] = {
-            "count": rag.get_collection_count(name)
-        }
-    
+    names = rag.list_all_collection_names()
+    collections = {name: {"count": rag.get_collection_count(name)} for name in names}
     return {
         "collections": collections,
         "total_collections": len(collections)

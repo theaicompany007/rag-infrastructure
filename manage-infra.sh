@@ -1,29 +1,36 @@
 #!/bin/bash
 # Infrastructure Management Script
-# Manages RAG Service, ChromaDB, Redis, and Ngrok
+# Manages RAG Service, ChromaDB, Redis, and Ngrok on the VM.
 # Location: /home/postgres/rag-infrastructure/manage-infra.sh
 #
 # Usage:
-#   ./manage-infra.sh [start|stop|restart|rebuild|rebuild-rag|purge|status|...]
+#   ./manage-infra.sh {start|stop|restart|rebuild|rebuild-rag|purge|status|...}
 #
 # Commands:
-#   start          - Start infrastructure services (RAG/ChromaDB/Redis)
-#   stop           - Stop infrastructure services
-#   restart        - Restart infrastructure services
-#   rebuild        - Rebuild and restart all services
-#   rebuild-rag    - Rebuild and restart RAG service only
-#   purge          - Stop and remove containers, networks (keeps volumes)
-#   status         - Show status of infrastructure services
-#   enable-ngrok   - Enable ngrok service (systemd)
-#   disable-ngrok  - Disable ngrok service (systemd)
-#   ngrok-status   - Check ngrok service status and active tunnels
+#   start             Start RAG, ChromaDB, Redis. Creates shared-infra-network if missing.
+#                     If chroma/redis containers already exist ("already in use"), starts
+#                     only rag-service so you can run start safely after copying updated files.
+#   stop              Stop all infrastructure containers
+#   restart           Restart all infrastructure containers
+#   rebuild           Rebuild all images and start. Same "already in use" fallback as start.
+#   rebuild-rag       Rebuild and start RAG service only (--no-cache so requirements.txt pins apply)
+#   purge             Stop and remove containers/networks (keeps volumes)
+#   status            Show status of Docker services and ngrok
+#   enable-ngrok      Enable ngrok systemd service
+#   disable-ngrok     Disable ngrok systemd service
+#   ngrok-status      Show ngrok service status and active tunnels
+#   fix-redis-misconf Fix Redis MISCONF (cannot persist to disk) error
+#   logs             Show container logs (e.g. logs --tail=100, logs -f, logs rag-service)
+#
+# Copy updated files to VM (run from repo rag-infrastructure folder):
+#   gcloud compute scp docker-compose.yml manage-infra.sh postgres@chroma-vm:/home/postgres/rag-infrastructure/ --zone=asia-south1-a --project=onlynereputation-agentic && \
+#   gcloud compute ssh postgres@chroma-vm --zone=asia-south1-a --project=onlynereputation-agentic --command "cd /home/postgres/rag-infrastructure && chmod +x manage-infra.sh"
 #
 # Notes:
-#   - Infrastructure must start BEFORE other projects (revenue/web/vani depend on it)
-#   - This project creates the shared-infra-network that other projects connect to
+#   - Run infrastructure start before other projects (revenue/web/vani depend on it)
+#   - shared-infra-network is created automatically if missing (docker-compose uses external: true)
 #   - Celery Worker and Celery Beat run in VANI project (not here)
-#   - Purge only affects infrastructure project, not other projects
-#   - Ngrok runs as a systemd service on the host (not in Docker) to expose services
+#   - Ngrok runs as a systemd service on the host (not in Docker)
 
 set -e
 
@@ -54,23 +61,44 @@ check_compose_file() {
     fi
 }
 
+ensure_network() {
+    if ! docker network ls --format '{{.Name}}' | grep -q '^shared-infra-network$'; then
+        echo -e "${CYAN}Creating shared-infra-network...${NC}"
+        docker network create shared-infra-network
+        echo -e "${GREEN}✅ Network created${NC}"
+    fi
+}
+
 cmd_start() {
     print_header
     echo -e "${YELLOW}🚀 Starting infrastructure services...${NC}"
     echo ""
     
     check_compose_file
+    ensure_network
     
     # Create .env file if it doesn't exist (for build args)
     if [ ! -f .env ]; then
         echo -e "${YELLOW}⚠️  .env file not found. Creating from .env.local...${NC}"
         if [ -f .env.local ]; then
-            # Extract build args from .env.local
             grep -E "^(SUPABASE_URL|NEXT_PUBLIC_SUPABASE_URL|NEXT_PUBLIC_SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)=" .env.local > .env 2>/dev/null || true
         fi
     fi
     
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d
+    set +e
+    out=$(docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d 2>&1)
+    rc=$?
+    set -e
+    echo "$out"
+    if [ $rc -ne 0 ]; then
+        if echo "$out" | grep -qi "already in use"; then
+            echo -e "${YELLOW}⚠️  Some containers (chroma/redis) already exist. Starting RAG service only...${NC}"
+            docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d --no-deps rag-service
+        else
+            echo -e "${RED}❌ Failed to start services${NC}"
+            exit 1
+        fi
+    fi
     
     echo ""
     echo -e "${GREEN}✅ Infrastructure services started!${NC}"
@@ -115,16 +143,29 @@ cmd_rebuild() {
     echo ""
     
     check_compose_file
+    ensure_network
     
-    # Create .env file if needed
     if [ ! -f .env ]; then
         if [ -f .env.local ]; then
             grep -E "^(SUPABASE_URL|NEXT_PUBLIC_SUPABASE_URL|NEXT_PUBLIC_SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)=" .env.local > .env 2>/dev/null || true
         fi
     fi
     
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d --build
-    
+    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" build
+    set +e
+    out=$(docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d 2>&1)
+    rc=$?
+    set -e
+    echo "$out"
+    if [ $rc -ne 0 ]; then
+        if echo "$out" | grep -qi "already in use"; then
+            echo -e "${YELLOW}⚠️  Some containers already exist. Starting RAG service only...${NC}"
+            docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d --no-deps rag-service
+        else
+            echo -e "${RED}❌ Failed to start services${NC}"
+            exit 1
+        fi
+    fi
     echo ""
     echo -e "${GREEN}✅ Infrastructure services rebuilt and started${NC}"
 }
@@ -135,6 +176,7 @@ cmd_rebuild_rag() {
     echo ""
     
     check_compose_file
+    ensure_network
     
     if [ ! -f .env ]; then
         if [ -f .env.local ]; then
@@ -142,8 +184,9 @@ cmd_rebuild_rag() {
         fi
     fi
     
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" build rag-service && \
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d rag-service
+    # --no-cache so requirements.txt / dependency pins (e.g. numpy<2) are applied every time
+    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" build --no-cache rag-service && \
+    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d --no-deps rag-service
     
     echo ""
     echo -e "${GREEN}✅ RAG service rebuilt and started${NC}"
@@ -473,6 +516,18 @@ cmd_ngrok_status() {
     fi
 }
 
+cmd_logs() {
+    print_header
+    echo -e "${CYAN}📜 Infrastructure Logs (rag-service, chroma, redis)${NC}"
+    echo -e "${YELLOW}Usage: $0 logs [--tail=N] [-f] [service...]   # default --tail=100, all services${NC}"
+    echo ""
+    check_compose_file
+    if [ $# -eq 0 ]; then
+        set -- --tail=100
+    fi
+    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" logs "$@"
+}
+
 cmd_fix_redis_misconf() {
     print_header
     echo -e "${YELLOW}🔧 Fixing Redis MISCONF (cannot persist to disk)...${NC}"
@@ -533,23 +588,36 @@ case "${1:-}" in
     fix-redis-misconf)
         cmd_fix_redis_misconf
         ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|rebuild|rebuild-rag|purge|status|enable-ngrok|disable-ngrok|ngrok-status|fix-redis-misconf}"
+    logs)
+        shift
+        cmd_logs "$@"
+        ;;
+    -h|--help|help)
+        echo "Usage: $0 {start|stop|restart|rebuild|rebuild-rag|purge|status|logs|enable-ngrok|disable-ngrok|ngrok-status|fix-redis-misconf}"
         echo ""
         echo "Commands:"
-        echo "  start             - Start infrastructure services (Docker)"
-        echo "  stop              - Stop infrastructure services (Docker)"
-        echo "  restart           - Restart infrastructure services (Docker)"
-        echo "  rebuild           - Rebuild and restart all services (Docker)"
-        echo "  rebuild-rag       - Rebuild and restart RAG service only (Docker)"
-        echo "  purge             - Stop and remove containers/networks (keeps volumes)"
-        echo "  status            - Show status of all services (Docker + Ngrok)"
-        echo "  enable-ngrok      - Enable ngrok service (systemd)"
-        echo "  disable-ngrok     - Disable ngrok service (systemd)"
-        echo "  ngrok-status      - Check ngrok service status and active tunnels"
-        echo "  fix-redis-misconf - Fix Redis MISCONF (cannot persist to disk) error"
+        echo "  start             Start RAG, ChromaDB, Redis. If chroma/redis already exist, starts only rag-service."
+        echo "  stop              Stop infrastructure containers"
+        echo "  restart           Restart infrastructure containers"
+        echo "  rebuild           Rebuild all images and start (same fallback as start if containers in use)"
+        echo "  rebuild-rag       Rebuild and start RAG service only (no cache; pins in requirements.txt apply)"
+        echo "  purge             Stop and remove containers/networks (keeps volumes)"
+        echo "  status            Show status (Docker + ngrok)"
+        echo "  enable-ngrok      Enable ngrok service (systemd)"
+        echo "  disable-ngrok     Disable ngrok service (systemd)"
+        echo "  ngrok-status      Ngrok status and active tunnels"
+        echo "  fix-redis-misconf Fix Redis MISCONF (cannot persist to disk)"
+        echo "  logs             Show logs (e.g. logs --tail=200, logs -f, logs rag-service)"
         echo ""
-        echo "Note: Celery Worker and Celery Beat run in VANI project (not here)"
+        echo "Copy files to VM (from repo rag-infrastructure/):"
+        echo "  gcloud compute scp docker-compose.yml manage-infra.sh postgres@chroma-vm:/home/postgres/rag-infrastructure/ --zone=asia-south1-a --project=onlynereputation-agentic && gcloud compute ssh postgres@chroma-vm --zone=asia-south1-a --project=onlynereputation-agentic --command \"cd /home/postgres/rag-infrastructure && chmod +x manage-infra.sh\""
+        echo ""
+        echo "Note: Celery Worker and Celery Beat run in VANI project (not here)."
+        exit 0
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|rebuild|rebuild-rag|purge|status|logs|enable-ngrok|disable-ngrok|ngrok-status|fix-redis-misconf}"
+        echo "Run: $0 help   for full command list and copy-to-VM one-liner"
         exit 1
         ;;
 esac
